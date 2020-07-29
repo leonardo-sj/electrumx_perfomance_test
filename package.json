@@ -1,0 +1,20 @@
+{
+  "name": "test_wallet2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "electrum-client": "git+https://github.com/BlueWallet/rn-electrum-client.git#cc018effafd2256272f348953500c4d27cef0d2f",
+    "axios": "^0.19.2",
+    "bignumber.js": "^9.0.0",
+    "bip39": "^3.0.2",
+    "bitcoinjs-lib": "^5.1.10",
+    "buffer-reverse": "^1.0.1",
+    "unchained-bitcoin": "0.0.14"
+  },
+  "author": "",
+  "license": "ISC"
+}
