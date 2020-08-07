@@ -85,7 +85,7 @@ const scanForAddressesAndTransactions = async (currentWallet, multisig = true, c
         changeAddresses.push(changeAddress);
         const changeTxs = await getTransactionsFromAddresses(changeAddress.address, currentBitcoinNetwork);
         if (changeTxs.length == 0) unusedChangeAddresses.push(changeAddress);
-        transactions = [...transactions, ...receiveTxs];
+        transactions = [...transactions, ...changeTxs];
 
         if (changeTxs.length == 0 && receiveTxs.length == 0) ++gap;
         else gap = 0;
