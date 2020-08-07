@@ -12,6 +12,8 @@ const BigNumber = require('bignumber.js');
 const defaultPeer = { host: 'testnet.aranguren.org', ssl: '51002' };
 //const defaultPeer = { host: 'blockstream.info', ssl: '993' };
 //const defaultPeer = { host: 'electrum1.bluewallet.io', ssl: '443' };
+// electrum.blockstream.info:60002
+// blockstream.info:993
 const hardcodedPeers = [
     { host: 'electrum1.bluewallet.io', ssl: '443' },
     { host: 'electrum1.bluewallet.io', ssl: '443' }, // 2x weight
@@ -137,19 +139,35 @@ module.exports.multiGetUtxoByAddress = async function (addresses, network, batch
         // TODO: Electrs supoprts blockchainScripthash_listunspent. (not batch ?)
         if (disableBatching) {
             // ElectrumPersonalServer doesnt support `blockchain.scripthash.listunspent` (not batch ?)
-            throw new Error('ElectrumPersonalServer doesnt support `blockchain.scripthash.listunspent`');
+            for (const scripthash of scripthashes) {
+                //console.log(scripthash);
+                //console.log("Buscando " + scripthash2addr[scripthash]);
+                result = await mainClient.blockchainScripthash_listunspent(scripthash);
+                // console.log(result);
+
+                ret[scripthash2addr[scripthash]] = result;
+                for (const utxo of ret[scripthash2addr[scripthash]]) {
+                    utxo.address = scripthash2addr[scripthash];
+                    utxo.txId = utxo.tx_hash;
+                    utxo.vout = utxo.tx_pos;
+                    delete utxo.tx_pos;
+                    delete utxo.tx_hash;
+                }
+            }
+            //console.log(ret);
+            //throw new Error('ElectrumPersonalServer doesnt support `blockchain.scripthash.listunspent`');
         } else {
             results = await mainClient.blockchainScripthash_listunspentBatch(scripthashes);
-        }
 
-        for (const utxos of results) {
-            ret[scripthash2addr[utxos.param]] = utxos.result;
-            for (const utxo of ret[scripthash2addr[utxos.param]]) {
-                utxo.address = scripthash2addr[utxos.param];
-                utxo.txId = utxo.tx_hash;
-                utxo.vout = utxo.tx_pos;
-                delete utxo.tx_pos;
-                delete utxo.tx_hash;
+            for (const utxos of results) {
+                ret[scripthash2addr[utxos.param]] = utxos.result;
+                for (const utxo of ret[scripthash2addr[utxos.param]]) {
+                    utxo.address = scripthash2addr[utxos.param];
+                    utxo.txId = utxo.tx_hash;
+                    utxo.vout = utxo.tx_pos;
+                    delete utxo.tx_pos;
+                    delete utxo.tx_hash;
+                }
             }
         }
     }
@@ -173,11 +191,32 @@ module.exports.estimateFee = async function (numberOfBlocks) {
     return Math.round(new BigNumber(coinUnitsPerKilobyte).dividedBy(1024).multipliedBy(100000000).toNumber());
 };
 
+const {
+    Transaction
+} = require('bitcoinjs-lib');
+
+
+
+module.exports.broadcast = async function (hex) {
+    if (!mainClient) throw new Error('Electrum client is not connected');
+    try {
+        const broadcast = await mainClient.blockchainTransaction_broadcast(hex);
+        return broadcast;
+    } catch (error) {
+        return error;
+    }
+};
+
+module.exports.broadcastV2 = async function (hex) {
+    if (!mainClient) throw new Error('Electrum client is not connected');
+    return mainClient.blockchainTransaction_broadcast(hex);
+};
+
 module.exports.multiGetTransactionByTxid = async function (txids, batchsize, verbose) {
     batchsize = batchsize || 45;
     // this value is fine-tuned so althrough wallets in test suite will occasionally
     // throw 'response too large (over 1,000,000 bytes', test suite will pass
-    verbose = verbose !== false;
+    verbose = false; // verbose transactions are currently unsupported - on 'electrs-esplora 0.4.1', '1.4' 
     if (!mainClient) throw new Error('Electrum client is not connected');
     const ret = {};
     txids = [...new Set(txids)]; // deduplicate just for any case
@@ -192,7 +231,7 @@ module.exports.multiGetTransactionByTxid = async function (txids, batchsize, ver
                     // in case of ElectrumPersonalServer it might not track some transactions (like source transactions for our transactions)
                     // so we wrap it in try-catch
                     let tx = await mainClient.blockchainTransaction_get(txid, verbose);
-                    if (typeof tx === 'string' && verbose) {
+                    if (typeof tx === 'string') {
                         // apparently electrum server (EPS?) didnt recognize VERBOSE parameter, and  sent us plain txhex instead of decoded tx.
                         // lets decode it manually on our end then:
                         tx = txhexToElectrumTransaction(tx);
@@ -211,7 +250,7 @@ module.exports.multiGetTransactionByTxid = async function (txids, batchsize, ver
                 } catch (_) { }
             }
         } else {
-            results = await mainClient.blockchainTransaction_getBatch(chunk, verbose);
+            results = await mainClient.blockchainTransaction_getBatch(chunk, true);//verbose);
         }
 
         for (const txdata of results) {
@@ -222,17 +261,119 @@ module.exports.multiGetTransactionByTxid = async function (txids, batchsize, ver
     return ret;
 };
 
-module.exports.broadcast = async function (hex) {
-    if (!mainClient) throw new Error('Electrum client is not connected');
-    try {
-        const broadcast = await mainClient.blockchainTransaction_broadcast(hex);
-        return broadcast;
-    } catch (error) {
-        return error;
-    }
-};
+// Novo - Elects
 
-module.exports.broadcastV2 = async function (hex) {
-    if (!mainClient) throw new Error('Electrum client is not connected');
-    return mainClient.blockchainTransaction_broadcast(hex);
+function txhexToElectrumTransaction(txhex) {
+    const tx = bitcoin.Transaction.fromHex(txhex);
+
+    const ret = {
+        txid: tx.getId(),
+        hash: tx.getId(),
+        version: tx.version,
+        size: Math.ceil(txhex.length / 2),
+        vsize: tx.virtualSize(),
+        weight: tx.weight(),
+        locktime: tx.locktime,
+        vin: [],
+        vout: [],
+        hex: txhex,
+        blockhash: '',
+        confirmations: 0,
+        time: 0,
+        blocktime: 0,
+    };
+
+    for (const inn of tx.ins) {
+        const txinwitness = [];
+        if (inn.witness[0]) txinwitness.push(inn.witness[0].toString('hex'));
+        if (inn.witness[1]) txinwitness.push(inn.witness[1].toString('hex'));
+
+        ret.vin.push({
+            txid: reverse(inn.hash).toString('hex'),
+            vout: inn.index,
+            scriptSig: { hex: inn.script.toString('hex'), asm: '' },
+            txinwitness,
+            sequence: inn.sequence,
+        });
+    }
+
+    let n = 0;
+    for (const out of tx.outs) {
+        const value = new BigNumber(out.value).dividedBy(100000000).toNumber();
+        let address = false;
+        let type = false;
+
+        if (SegwitBech32Wallet_scriptPubKeyToAddress(out.script.toString('hex'))) {
+            address = SegwitBech32Wallet_scriptPubKeyToAddress(out.script.toString('hex'));
+            type = 'witness_v0_keyhash';
+        } else if (SegwitP2SHWallet_scriptPubKeyToAddress(out.script.toString('hex'))) {
+            address = SegwitP2SHWallet_scriptPubKeyToAddress(out.script.toString('hex'));
+            type = '???'; // TODO
+        } else if (LegacyWallet_scriptPubKeyToAddress(out.script.toString('hex'))) {
+            address = LegacyWallet_scriptPubKeyToAddress(out.script.toString('hex'));
+            type = '???'; // TODO
+        }
+
+        ret.vout.push({
+            value,
+            n,
+            scriptPubKey: {
+                asm: '',
+                hex: out.script.toString('hex'),
+                reqSigs: 1, // todo
+                type,
+                addresses: [address],
+            },
+        });
+        n++;
+    }
+    return ret;
+}
+
+const SegwitBech32Wallet_scriptPubKeyToAddress = (scriptPubKey) => {
+    const scriptPubKey2 = Buffer.from(scriptPubKey, 'hex');
+    let ret;
+    try {
+        ret = bitcoin.payments.p2wpkh({
+            output: scriptPubKey2,
+            network: bitcoin.networks.bitcoin,
+        }).address;
+    } catch (_) {
+        return false;
+    }
+    return ret;
+}
+
+const SegwitP2SHWallet_scriptPubKeyToAddress = (scriptPubKey) => {
+    const scriptPubKey2 = Buffer.from(scriptPubKey, 'hex');
+    let ret;
+    try {
+        ret = bitcoin.payments.p2sh({
+            output: scriptPubKey2,
+            network: bitcoin.networks.bitcoin,
+        }).address;
+    } catch (_) {
+        return false;
+    }
+    return ret;
+}
+
+const LegacyWallet_scriptPubKeyToAddress = (scriptPubKey) => {
+    const scriptPubKey2 = Buffer.from(scriptPubKey, 'hex');
+    let ret;
+    try {
+        ret = bitcoin.payments.p2pkh({
+            output: scriptPubKey2,
+            network: bitcoin.networks.bitcoin,
+        }).address;
+    } catch (_) {
+        return false;
+    }
+    return ret;
+}
+
+module.exports.estimateCurrentBlockheight = function () {
+    const baseTs = 1587570465609; // uS
+    const baseHeight = 627179;
+    return Math.floor(baseHeight + (+new Date() - baseTs) / 1000 / 60 / 9.5);
 };
